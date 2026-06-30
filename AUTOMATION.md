@@ -19,16 +19,30 @@ Goal: iteratively drive the generated plaza toward the three reference photos in
 The scene definition lives **only** in `scene_lib.py`; both the GUI and the headless renderer use
 it, so there is no drift between what you tune and what gets captured.
 
+## Per-iteration rules (MANDATORY)
+
+- **Commit every single iteration to git.** After producing each `iter_NNN` (config + render),
+  `git add -A && git commit` with a message describing the change. This gives a restore point for
+  every step (e.g. the iter_037 baseline, tag `iter_037-baseline`). Never batch multiple iterations
+  into one commit.
+- **Render 5 angles, not just the hero.** For each iteration, after `--save-usd out/iter_NNN.usd`,
+  run the multi-view shooter and scrutinize all five (different angles + closeness) for problems
+  that a single shot hides (floating decals, z-fighting/flicker, projection flips, scale):
+  ```bash
+  python -u render_views.py --usd out/iter_NNN.usd --outdir finals/iter_NNN --tag iNNN
+  ```
+  Views: `1_hero`, `2_low_near`, `3_topdown`, `4_close`, `5_opp_high`.
+
 ## The loop
 
 1. **Render** the current config to a screenshot:
    ```bash
    conda run -n env_isaaclab python -u render_scene.py \
-       --config configs/iter_NNN.json --out screenshots/iter_NNN.png
+       --config configs/iter_NNN.json --out screenshots/iter_NNN.png --save-usd out/iter_NNN.usd
    ```
-   (~30–60 s incl. boot. Add `--save-usd out/iter_NNN.usd` to also keep the stage.)
+   then the 5-angle pass (above), then **commit**.
 
-2. **Compare** `screenshots/iter_NNN.png` against the three `ex_imgs/` on:
+2. **Compare** the 5 shots against the three `ex_imgs/` on:
    - patio tile colour + the grid/seam pattern
    - floor colour
    - number of trees, their colour, size, and how much they fill the frame

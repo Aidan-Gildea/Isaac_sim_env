@@ -145,18 +145,15 @@ class SceneBuilder:
         sh.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(roughness)
         return mat_path
 
-    def make_decal(self, mat_path, name, diffuse_png, opacity_png, obj_w, obj_h, threshold=0.25, tint=None):
-        """Decal material (iter_037 baseline). OBJECT-space triplanar with texture_scale=1/(quad size)
-        so one tile maps onto the quad. OmniPBR's opacity_texture reads a MONO value, so opacity_png
-        must be a GRAYSCALE mask (shape white on black)."""
+    def make_decal(self, mat_path, name, diffuse_png, opacity_png, threshold=0.25, tint=None):
+        """Decal material on a unit Plane. Uses the mesh's own UVs (project_uvw OFF) so the texture is
+        locked to the quad [0,1] -> STABLE under camera moves (object-space triplanar flipped the
+        crack as the view changed). OmniPBR's opacity_texture reads a MONO value, so opacity_png must
+        be a GRAYSCALE mask (shape white on black)."""
         from isaacsim.core.api.materials import OmniPBR
         OmniPBR(prim_path=mat_path, name=name, texture_path=diffuse_png)
         sh = self._shader_of(mat_path)
         if sh is not None:
-            sh.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)
-            sh.CreateInput("world_or_object", Sdf.ValueTypeNames.Bool).Set(False)
-            sh.CreateInput("texture_scale", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(1.0 / obj_w, 1.0 / obj_h))
-            sh.CreateInput("texture_translate", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(0.5, 0.5))
             sh.CreateInput("enable_opacity", Sdf.ValueTypeNames.Bool).Set(True)
             sh.CreateInput("enable_opacity_texture", Sdf.ValueTypeNames.Bool).Set(True)
             sh.CreateInput("opacity_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(opacity_png))
@@ -478,7 +475,7 @@ class SceneBuilder:
             path = f"/World/Spalls/Spall_{i}"
             self.add_quad(path, half)
             self.set_transform(path, translate=(x, y, c.patio_top + 0.004), rotate_z=yaw)
-            mat = self.make_decal(f"/World/Looks/Spalls/Spall_{i}", f"spall_{i}", png, png, 2 * half, 2 * half)
+            mat = self.make_decal(f"/World/Looks/Spalls/Spall_{i}", f"spall_{i}", png, png)
             self.bind_material(self.stage.GetPrimAtPath(path), mat)
 
     def place_spots(self):
@@ -496,9 +493,9 @@ class SceneBuilder:
             tint = float(self.rng.uniform(0.30, 0.70))    # vary darkness
             path = f"/World/Spots/Spot_{i}"
             self.add_quad(path, 0.5)
-            self.set_transform(path, translate=(x, y, c.patio_top + 0.004), rotate_z=yaw, scale=(size, size, 1.0))
+            self.set_transform(path, translate=(x, y, c.patio_top + 0.006), rotate_z=yaw, scale=(size, size, 1.0))
             mat = self.make_decal(f"/World/Looks/Spots/Spot_{i}", f"spot_{i}", SPOT_DIFF, SPOT_OPAC,
-                                  size, size, threshold=0.0, tint=tint)  # soft alpha-blended stain
+                                  threshold=0.0, tint=tint)  # soft alpha-blended stain
             self.bind_material(self.stage.GetPrimAtPath(path), mat)
 
     def _has_crack(self):
@@ -524,9 +521,9 @@ class SceneBuilder:
             yaw = float(self.rng.uniform(0, 360))
             path = f"/World/Cracks/Crack_{i}"
             self.add_quad(path, 0.5)
-            self.set_transform(path, translate=(x, y, c.patio_top + 0.005), rotate_z=yaw, scale=(sx, sy, 1.0))
+            self.set_transform(path, translate=(x, y, c.patio_top + 0.008), rotate_z=yaw, scale=(sx, sy, 1.0))
             mat = self.make_decal(f"/World/Looks/Cracks/Crack_{i}", f"crack_{i}", CRACK_DIFF, CRACK_OPAC,
-                                  sx, sy, threshold=0.3, tint=c.crack_tint)
+                                  threshold=0.3, tint=c.crack_tint)
             self.bind_material(self.stage.GetPrimAtPath(path), mat)
 
     def place_pillar_crack(self):
@@ -551,7 +548,7 @@ class SceneBuilder:
         xf.AddRotateXOp().Set(-90.0)          # stand the quad upright
         xf.AddScaleOp().Set(Gf.Vec3f(width, height, 1.0))
         mat = self.make_decal("/World/Looks/Cracks/PillarCrack", "pillar_crack", CRACK_DIFF, CRACK_OPAC,
-                              width, height, threshold=0.3, tint=c.crack_tint)
+                              threshold=0.3, tint=c.crack_tint)
         self.bind_material(self.stage.GetPrimAtPath(path), mat)
 
     def _sample_free(self, place_r, rad, margin=0.25, tries=400):
