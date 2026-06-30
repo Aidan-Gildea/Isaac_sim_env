@@ -1,0 +1,80 @@
+{
+  "seed": 0,
+  "floor_half": 30.0,
+  "patio_half": 7.0,
+  "patio_top": 0.1,
+  "rim_top": 0.22,
+  "rim_bar": 0.25,
+  "floor_grey": 0.78,
+  "floor_tile": 12.0,
+  "floor_rough": 0.85,
+  "patio_grey": 0.61,
+  "patio_tile": 4.0,
+  "patio_rough": 0.95,
+  "rim_grey": 0.55,
+  "cone_half": 3.2,
+  "n_barriers": 3,
+  "barrier_ring_r": 1.7,
+  "barrier_scale": 0.8,
+  "pillar_radius": 0.22,
+  "pillar_height": 1.6,
+  "n_spalls": 2,
+  "spall_half_min": 0.7,
+  "spall_half_max": 1.2,
+  "n_trees": 10,
+  "tree_gap": 1.2,
+  "tree_h_min": 5.0,
+  "tree_h_max": 8.5,
+  "isaac_trees": [
+    "Douglas_Fir",
+    "White_Pine",
+    "Yellow_Pine",
+    "Red_Maple",
+    "Sugar_Maple",
+    "Japanese_Maple",
+    "Red_Oak",
+    "Scarlet_Oak",
+    "Gray_Birch",
+    "Black_Oak",
+    "Orange_Tree",
+    "Shumard_Oak",
+    "Elm_Sapling"
+  ],
+  "use_local_trees": true,
+  "line_color": [
+    1.0,
+    0.78,
+    0.0
+  ],
+  "dome_color": [
+    0.62,
+    0.66,
+    0.78
+  ],
+  "dome_intensity": 1000.0,
+  "sun_color": [
+    1.0,
+    0.89,
+    0.7
+  ],
+  "sun_intensity": 3200.0,
+  "sun_angle": 0.53,
+  "sun_rot": [
+    -48.0,
+    0.0,
+    35.0
+  ],
+  "cam_pos": [
+    17.0,
+    -17.0,
+    12.0
+  ],
+  "cam_look": [
+    0.0,
+    0.0,
+    0.6
+  ],
+  "cam_focal": 18.0,
+  "res_w": 1024,
+  "res_h": 576
+}

@@ -1,0 +1,12 @@
+# Large binary assets (download separately) — exceed GitHub's 100MB limit
+assets/trees/
+assets/barriers/
+models/
+Spalls/
+
+# Generated stages / caches
+out/
+__pycache__/
+*.pyc
+
+# Keep: code, configs/, assets/textures/ (generated maps), cracks/, ex_imgs/, screenshots/, finals/
