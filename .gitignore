@@ -10,6 +10,3 @@ __pycache__/
 *.pyc
 
 # Keep: code, configs/, assets/textures/ (generated maps), cracks/, ex_imgs/, screenshots/, finals/
-
-# personal study guide (not for publication)
-LEARN.md
