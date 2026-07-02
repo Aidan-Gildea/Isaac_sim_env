@@ -502,39 +502,68 @@ class SceneBuilder:
         return os.path.isfile(CRACK_DIFF) and os.path.isfile(CRACK_OPAC)
 
     def place_cracks(self):
-        """Lay the (single) crack PNG flat on the patio: `crack_floor_base` cracks always, plus one
-        more with probability `crack_floor_extra_prob`. Kept within the cone-bounds square, random
-        orientation, scaled to a few metres like ex_imgs."""
+        """Floor cracks as REAL GEOMETRY (same technique as the pillar crack, which is stable):
+        thin jagged dark ribbons lying flat 1 mm above the patio. Opaque, no textures/opacity ->
+        cannot flicker, z-fight, or change orientation with the camera. `crack_floor_base` always,
+        plus one more with probability `crack_floor_extra_prob`; random position/heading/length
+        within the cone bounds; spread apart by `crack_min_sep`."""
         c = self.cfg
-        if not self._has_crack():
-            return
-        from PIL import Image
-        w, h = Image.open(CRACK_OPAC).size
         n = c.crack_floor_base + (1 if self.rng.uniform() < c.crack_floor_extra_prob else 0)
         UsdGeom.Xform.Define(self.stage, "/World/Cracks")
         UsdGeom.Scope.Define(self.stage, "/World/Looks/Cracks")
+        mat = self.make_omnipbr("/World/Looks/Cracks/FloorCrack", "floor_crack", color=(0.008, 0.008, 0.01))
+        shf = self._shader_of(mat)
+        if shf is not None:  # fully rough: no specular sheen (reads tan under the warm sun otherwise)
+            shf.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(1.0)
+            shf.CreateInput("specular_level", Sdf.ValueTypeNames.Float).Set(0.0)
+        z = c.patio_top + 0.001
+        lim = c.cone_half - 0.3
         placed = []
+        nseg = 26
         for i in range(n):
-            L = float(self.rng.uniform(c.crack_len_min, c.crack_len_max))   # long axis
-            sx, sy = (L * w / h, L) if h >= w else (L, L * h / w)           # preserve aspect
-            lim = max(0.3, c.cone_half - 0.5 * max(sx, sy))                 # stay within cone bounds
-            # rejection-sample so floor cracks are SPREAD APART (ex_imgs: separated, near barriers)
-            x = y = 0.0
-            for _ in range(200):
-                x, y = float(self.rng.uniform(-lim, lim)), float(self.rng.uniform(-lim, lim))
-                if all(math.hypot(x - qx, y - qy) >= c.crack_min_sep for qx, qy in placed):
+            L = float(self.rng.uniform(c.crack_len_min, c.crack_len_max))
+            # sample a start point + heading whose whole span stays inside the cone bounds and
+            # away from other cracks
+            x0 = y0 = 0.0
+            phi = 0.0
+            for _ in range(300):
+                x0 = float(self.rng.uniform(-lim, lim))
+                y0 = float(self.rng.uniform(-lim, lim))
+                phi = float(self.rng.uniform(0, 2 * math.pi))
+                x1, y1 = x0 + L * math.cos(phi), y0 + L * math.sin(phi)
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                if (abs(x1) <= lim and abs(y1) <= lim
+                        and all(math.hypot(cx - qx, cy - qy) >= c.crack_min_sep for qx, qy in placed)):
                     break
-            placed.append((x, y))
-            yaw = float(self.rng.uniform(0, 360))
+            placed.append(((x0 + x0 + L * math.cos(phi)) / 2, (y0 + y0 + L * math.sin(phi)) / 2))
+            # jagged centreline with tapered width, as a flat ribbon
+            pts, fvc, fvi = [], [], []
+            px_, py_ = x0, y0
+            heading = phi
+            step = L / nseg
+            wmax = float(self.rng.uniform(0.018, 0.034))
+            for k in range(nseg + 1):
+                t = k / nseg
+                if k:
+                    heading += math.radians(float(self.rng.uniform(-16, 16)))
+                    px_, py_ = px_ + step * math.cos(heading), py_ + step * math.sin(heading)
+                w = wmax * math.sin(math.pi * min(1.0, max(t, 0.02))) + 0.004
+                nx_, ny_ = -math.sin(heading), math.cos(heading)   # perpendicular
+                pts.append(Gf.Vec3f(px_ - nx_ * w / 2, py_ - ny_ * w / 2, z))
+                pts.append(Gf.Vec3f(px_ + nx_ * w / 2, py_ + ny_ * w / 2, z))
+            for k in range(nseg):
+                b = 2 * k
+                fvc.append(4)
+                fvi += [b, b + 1, b + 3, b + 2]
             path = f"/World/Cracks/Crack_{i}"
-            quad = self.add_quad(path, 0.5)
-            # flush with the surface (2 mm) + no shadow casting: an elevated decal casts a drop
-            # shadow that reads as a floating twin crack
-            quad.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
-            self.set_transform(path, translate=(x, y, c.patio_top + 0.002), rotate_z=yaw, scale=(sx, sy, 1.0))
-            mat = self.make_decal(f"/World/Looks/Cracks/Crack_{i}", f"crack_{i}", CRACK_DIFF, CRACK_OPAC,
-                                  threshold=0.3, tint=c.crack_tint)
-            self.bind_material(self.stage.GetPrimAtPath(path), mat)
+            mesh = UsdGeom.Mesh.Define(self.stage, path)
+            mesh.CreatePointsAttr(pts)
+            mesh.CreateFaceVertexCountsAttr(fvc)
+            mesh.CreateFaceVertexIndicesAttr(fvi)
+            mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+            mesh.CreateDoubleSidedAttr(True)
+            mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+            self.bind_material(mesh.GetPrim(), mat)
 
     def add_cyl_patch(self, path, radius, height, arc_deg, u_band=(0.375, 0.625), nseg=16):
         """A vertical mesh strip CURVED around the local Z axis (cylindrical patch), centred on the
@@ -607,7 +636,11 @@ class SceneBuilder:
         mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         mesh.CreateDoubleSidedAttr(True)
         mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
-        mat = self.make_omnipbr("/World/Looks/Cracks/PillarCrack", "pillar_crack", color=(0.045, 0.045, 0.05))
+        mat = self.make_omnipbr("/World/Looks/Cracks/PillarCrack", "pillar_crack", color=(0.02, 0.02, 0.022))
+        shp = self._shader_of(mat)
+        if shp is not None:
+            shp.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(1.0)
+            shp.CreateInput("specular_level", Sdf.ValueTypeNames.Float).Set(0.0)
         self.bind_material(mesh.GetPrim(), mat)
 
     def _sample_free(self, place_r, rad, margin=0.25, tries=400):
