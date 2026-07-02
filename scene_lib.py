@@ -513,40 +513,87 @@ class SceneBuilder:
         n = c.crack_floor_base + (1 if self.rng.uniform() < c.crack_floor_extra_prob else 0)
         UsdGeom.Xform.Define(self.stage, "/World/Cracks")
         UsdGeom.Scope.Define(self.stage, "/World/Looks/Cracks")
+        placed = []
         for i in range(n):
             L = float(self.rng.uniform(c.crack_len_min, c.crack_len_max))   # long axis
             sx, sy = (L * w / h, L) if h >= w else (L, L * h / w)           # preserve aspect
             lim = max(0.3, c.cone_half - 0.5 * max(sx, sy))                 # stay within cone bounds
-            x, y = float(self.rng.uniform(-lim, lim)), float(self.rng.uniform(-lim, lim))
+            # rejection-sample so floor cracks are SPREAD APART (ex_imgs: separated, near barriers)
+            x = y = 0.0
+            for _ in range(200):
+                x, y = float(self.rng.uniform(-lim, lim)), float(self.rng.uniform(-lim, lim))
+                if all(math.hypot(x - qx, y - qy) >= c.crack_min_sep for qx, qy in placed):
+                    break
+            placed.append((x, y))
             yaw = float(self.rng.uniform(0, 360))
             path = f"/World/Cracks/Crack_{i}"
-            self.add_quad(path, 0.5)
-            self.set_transform(path, translate=(x, y, c.patio_top + 0.008), rotate_z=yaw, scale=(sx, sy, 1.0))
+            quad = self.add_quad(path, 0.5)
+            # flush with the surface (2 mm) + no shadow casting: an elevated decal casts a drop
+            # shadow that reads as a floating twin crack
+            quad.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+            self.set_transform(path, translate=(x, y, c.patio_top + 0.002), rotate_z=yaw, scale=(sx, sy, 1.0))
             mat = self.make_decal(f"/World/Looks/Cracks/Crack_{i}", f"crack_{i}", CRACK_DIFF, CRACK_OPAC,
                                   threshold=0.3, tint=c.crack_tint)
             self.bind_material(self.stage.GetPrimAtPath(path), mat)
 
+    def add_cyl_patch(self, path, radius, height, arc_deg, u_band=(0.375, 0.625), nseg=16):
+        """A vertical mesh strip CURVED around the local Z axis (cylindrical patch), centred on the
+        +X azimuth, with faceVarying UVs mapping u across u_band of the texture. Used to emboss the
+        crack onto the column so it hugs the surface instead of floating as a flat billboard."""
+        half = math.radians(arc_deg) / 2.0
+        pts, fvc, fvi, st = [], [], [], []
+        for i in range(nseg + 1):
+            a = -half + math.radians(arc_deg) * i / nseg
+            x, y = radius * math.cos(a), radius * math.sin(a)
+            pts.append(Gf.Vec3f(x, y, -height / 2.0))
+            pts.append(Gf.Vec3f(x, y, height / 2.0))
+        u0b, u1b = u_band
+        for i in range(nseg):
+            b = 2 * i
+            fvc.append(4)
+            fvi += [b, b + 2, b + 3, b + 1]
+            u0 = u0b + (u1b - u0b) * i / nseg
+            u1 = u0b + (u1b - u0b) * (i + 1) / nseg
+            st += [Gf.Vec2f(u0, 0), Gf.Vec2f(u1, 0), Gf.Vec2f(u1, 1), Gf.Vec2f(u0, 1)]
+        mesh = UsdGeom.Mesh.Define(self.stage, path)
+        mesh.CreatePointsAttr(pts)
+        mesh.CreateFaceVertexCountsAttr(fvc)
+        mesh.CreateFaceVertexIndicesAttr(fvi)
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateDoubleSidedAttr(True)
+        pv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                                     UsdGeom.Tokens.faceVarying)
+        pv.Set(st)
+        mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+        return mesh
+
     def place_pillar_crack(self):
-        """With probability `crack_pillar_prob`, stick the crack PNG vertically on the column's side."""
+        """With probability `crack_pillar_prob`, emboss the crack onto the column: a faceted arc of
+        narrow Omni-Plane strips hugging the cylinder (each facet <=1 mm off the surface), each
+        textured with its vertical slice of the crack. Flat tangent billboards floated off the
+        column; hand-authored curved meshes don't sample opacity textures in this build."""
         c = self.cfg
         if not self._has_crack() or self.rng.uniform() >= c.crack_pillar_prob:
             return
         px, py = getattr(self, "pillar_xy", (0.0, 0.0))
-        R = c.pillar_radius + 0.012
         theta = float(self.rng.uniform(0, 360))
         a = math.radians(theta)
-        height = float(self.rng.uniform(0.9, 1.3))
-        width = height  # square quad; the crack sits centered (thin) within it
+        size = float(self.rng.uniform(0.8, 1.1))  # square plane; full square texture maps 1:1 (the
+        #                                           proven-sharp path). Crack band = central 25%
+        #                                           (~0.2-0.27 m wide), hugging within ~1.3 cm; the
+        #                                           transparent margins are invisible.
         z_c = c.patio_top + c.pillar_height * 0.5
+        R = c.pillar_radius + 0.006               # tangent 6 mm off the surface (2 mm gets depth-culled against the analytic cylinder)
         path = "/World/Cracks/PillarCrack"
         UsdGeom.Xform.Define(self.stage, "/World/Cracks")
-        self.add_quad(path, 0.5)
+        quad = self.add_quad(path, 0.5)
+        quad.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
         xf = UsdGeom.Xformable(self.stage.GetPrimAtPath(path))
         xf.ClearXformOpOrder()
         xf.AddTranslateOp().Set(Gf.Vec3d(px + R * math.cos(a), py + R * math.sin(a), z_c))
-        xf.AddRotateZOp().Set(theta - 90.0)   # face outward at azimuth theta
-        xf.AddRotateXOp().Set(-90.0)          # stand the quad upright
-        xf.AddScaleOp().Set(Gf.Vec3f(width, height, 1.0))
+        xf.AddRotateZOp().Set(theta - 90.0)       # face outward at azimuth theta
+        xf.AddRotateXOp().Set(-90.0)              # stand upright
+        xf.AddScaleOp().Set(Gf.Vec3f(size, size, 1.0))
         mat = self.make_decal("/World/Looks/Cracks/PillarCrack", "pillar_crack", CRACK_DIFF, CRACK_OPAC,
                               threshold=0.3, tint=c.crack_tint)
         self.bind_material(self.stage.GetPrimAtPath(path), mat)

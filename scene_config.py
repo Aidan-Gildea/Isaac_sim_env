@@ -71,6 +71,7 @@ class SceneConfig:
     crack_len_min: float = 3.0     # long-axis length on the patio (meters)
     crack_len_max: float = 5.0
     crack_tint: float = 0.5        # darken the crack decal so it reads
+    crack_min_sep: float = 2.5     # min distance between floor cracks (not adjacent)
 
     # --- trees ---
     n_trees: int = 10
