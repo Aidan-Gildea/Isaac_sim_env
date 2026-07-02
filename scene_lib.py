@@ -573,30 +573,42 @@ class SceneBuilder:
         textured with its vertical slice of the crack. Flat tangent billboards floated off the
         column; hand-authored curved meshes don't sample opacity textures in this build."""
         c = self.cfg
-        if not self._has_crack() or self.rng.uniform() >= c.crack_pillar_prob:
+        if self.rng.uniform() >= c.crack_pillar_prob:
             return
+        # REAL GEOMETRY crack: a thin jagged dark ribbon whose vertices lie ON the cylinder surface
+        # (r = R+1mm) by construction -> flush with the column from every angle. Plain dark material,
+        # no textures/opacity (texture decals proved unreliable on curved geometry in this build).
         px, py = getattr(self, "pillar_xy", (0.0, 0.0))
-        theta = float(self.rng.uniform(0, 360))
-        a = math.radians(theta)
-        size = float(self.rng.uniform(0.8, 1.1))  # square plane; full square texture maps 1:1 (the
-        #                                           proven-sharp path). Crack band = central 25%
-        #                                           (~0.2-0.27 m wide), hugging within ~1.3 cm; the
-        #                                           transparent margins are invisible.
-        z_c = c.patio_top + c.pillar_height * 0.5
-        R = c.pillar_radius + 0.006               # tangent 6 mm off the surface (2 mm gets depth-culled against the analytic cylinder)
+        R = c.pillar_radius + 0.001
+        z0 = c.patio_top + c.pillar_height * float(self.rng.uniform(0.15, 0.30))
+        z1 = c.patio_top + c.pillar_height * float(self.rng.uniform(0.70, 0.90))
+        a = math.radians(float(self.rng.uniform(0, 360)))   # start azimuth
+        nseg = 24
+        pts, fvc, fvi = [], [], []
+        zs = np.linspace(z0, z1, nseg + 1)
+        for i in range(nseg + 1):
+            t = i / nseg
+            a += math.radians(float(self.rng.uniform(-14, 14)))  # jagged wander
+            w = 0.016 * math.sin(math.pi * min(1.0, max(t, 0.02))) + 0.004  # taper at ends
+            da = (w / 2.0) / R                                # half-width as an angle on the surface
+            for s in (-1, 1):
+                aa = a + s * da
+                pts.append(Gf.Vec3f(px + R * math.cos(aa), py + R * math.sin(aa), float(zs[i])))
+        for i in range(nseg):
+            b = 2 * i
+            fvc.append(4)
+            fvi += [b, b + 1, b + 3, b + 2]
         path = "/World/Cracks/PillarCrack"
         UsdGeom.Xform.Define(self.stage, "/World/Cracks")
-        quad = self.add_quad(path, 0.5)
-        quad.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
-        xf = UsdGeom.Xformable(self.stage.GetPrimAtPath(path))
-        xf.ClearXformOpOrder()
-        xf.AddTranslateOp().Set(Gf.Vec3d(px + R * math.cos(a), py + R * math.sin(a), z_c))
-        xf.AddRotateZOp().Set(theta - 90.0)       # face outward at azimuth theta
-        xf.AddRotateXOp().Set(-90.0)              # stand upright
-        xf.AddScaleOp().Set(Gf.Vec3f(size, size, 1.0))
-        mat = self.make_decal("/World/Looks/Cracks/PillarCrack", "pillar_crack", CRACK_DIFF, CRACK_OPAC,
-                              threshold=0.3, tint=c.crack_tint)
-        self.bind_material(self.stage.GetPrimAtPath(path), mat)
+        mesh = UsdGeom.Mesh.Define(self.stage, path)
+        mesh.CreatePointsAttr(pts)
+        mesh.CreateFaceVertexCountsAttr(fvc)
+        mesh.CreateFaceVertexIndicesAttr(fvi)
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateDoubleSidedAttr(True)
+        mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+        mat = self.make_omnipbr("/World/Looks/Cracks/PillarCrack", "pillar_crack", color=(0.045, 0.045, 0.05))
+        self.bind_material(mesh.GetPrim(), mat)
 
     def _sample_free(self, place_r, rad, margin=0.25, tries=400):
         """Sample (x,y) in a disk (radius place_r) that keeps a circle of `rad` clear of every
@@ -654,11 +666,20 @@ class SceneBuilder:
         x, y = self._sample_free(place_r, pillar_r)  # never overlap the barriers
         self.obstacles = getattr(self, "obstacles", []) + [(x, y, pillar_r)]
         self.pillar_xy = (x, y)
-        cyl = UsdGeom.Cylinder.Define(self.stage, "/World/Pillar")
-        cyl.CreateRadiusAttr(c.pillar_radius)
-        cyl.CreateHeightAttr(c.pillar_height)
-        cyl.CreateAxisAttr(UsdGeom.Tokens.z)
-        self.set_transform("/World/Pillar", translate=(x, y, c.patio_top + c.pillar_height / 2.0))
+        # MESH cylinder (not the analytic UsdGeom.Cylinder): RTX mishandles alpha-cutout decals
+        # within millimetres of analytic primitives, which made the pillar crack invisible/foggy.
+        import omni.kit.commands
+        omni.kit.commands.execute("CreateMeshPrimWithDefaultXform", prim_type="Cylinder",
+                                  prim_path="/World/Pillar", select_new_prim=False)
+        prim = self.stage.GetPrimAtPath("/World/Pillar")
+        UsdGeom.Xformable(prim).ClearXformOpOrder()
+        for attr in list(prim.GetAttributes()):
+            if attr.GetName().startswith("xformOp:"):
+                prim.RemoveProperty(attr.GetName())
+        xf = UsdGeom.Xformable(prim)
+        xf.AddTranslateOp().Set(Gf.Vec3d(x, y, c.patio_top + c.pillar_height / 2.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(2 * c.pillar_radius, 2 * c.pillar_radius, c.pillar_height))
+        cyl = UsdGeom.Mesh(prim)
         # rugged grey concrete (strong relief + imperfection blotches)
         self.bind_material(cyl.GetPrim(),
                            self.make_concrete_grey("/World/Looks/PillarConcrete", "pillar_concrete",
