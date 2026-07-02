@@ -501,12 +501,80 @@ class SceneBuilder:
     def _has_crack(self):
         return os.path.isfile(CRACK_DIFF) and os.path.isfile(CRACK_OPAC)
 
+    def _crack_path(self, samples=56):
+        """Extract the crack's centreline from the user's crack PNG: (t, offset, width) per sample,
+        normalised by the crack's length. Cached. offset = lateral deviation, width = local crack
+        width, so geometry ribbons reproduce the PNG's actual jagged shape and width variation."""
+        if getattr(self, "_crack_path_cache", None) is not None:
+            return self._crack_path_cache
+        from PIL import Image
+        from collections import deque
+        pngs = sorted(glob.glob(os.path.join(CRACKS_DIR, "*.png")))
+        a = np.asarray(Image.open(pngs[0]).convert("RGBA"))[..., 3]
+        m = a > 120
+        H, W = m.shape
+        lbl = np.zeros((H, W), np.int32)
+        sizes, cur = {}, 0
+        for si in range(H):
+            for sj in range(W):
+                if m[si, sj] and lbl[si, sj] == 0:
+                    cur += 1
+                    q = deque([(si, sj)]); lbl[si, sj] = cur; cnt = 0
+                    while q:
+                        i, j = q.popleft(); cnt += 1
+                        for di in (-1, 0, 1):
+                            for dj in (-1, 0, 1):
+                                y, x = i + di, j + dj
+                                if 0 <= y < H and 0 <= x < W and m[y, x] and lbl[y, x] == 0:
+                                    lbl[y, x] = cur; q.append((y, x))
+                    sizes[cur] = cnt
+        keep = lbl == max(sizes, key=sizes.get)
+        rows = [(y, xs.mean(), xs.size) for y in range(H) for xs in [np.nonzero(keep[y])[0]] if xs.size]
+        ys = np.array([r[0] for r in rows], float)
+        cx = np.array([r[1] for r in rows], float)
+        wd = np.array([r[2] for r in rows], float)
+        span = ys.max() - ys.min()
+        tq = np.linspace(ys.min(), ys.max(), samples)
+        off = np.interp(tq, ys, cx); off = (off - off.mean()) / span   # lateral offset / length
+        wid = np.interp(tq, ys, wd) / span                              # width / length
+        self._crack_path_cache = (np.linspace(0.0, 1.0, samples), off, wid)
+        return self._crack_path_cache
+
+    def _crack_ribbon(self, path, origin, direction, L, z, width_scale=1.4, min_w=0.004):
+        """Author a flat opaque ribbon following the PNG-extracted crack path. origin=(x,y) start,
+        direction=heading in radians, L=length in metres."""
+        t, off, wid = self._crack_path()
+        off, wid = off.copy(), wid.copy()
+        if self.rng.uniform() < 0.5:   # random mirror for variety
+            off = -off
+        if self.rng.uniform() < 0.5:   # random reverse
+            off = off[::-1]; wid = wid[::-1]
+        dx, dy = math.cos(direction), math.sin(direction)
+        nx_, ny_ = -dy, dx
+        pts, fvc, fvi = [], [], []
+        for k in range(len(t)):
+            cxk = origin[0] + t[k] * L * dx + off[k] * L * nx_
+            cyk = origin[1] + t[k] * L * dy + off[k] * L * ny_
+            w = max(min_w, wid[k] * L * width_scale)
+            pts.append(Gf.Vec3f(cxk - nx_ * w / 2, cyk - ny_ * w / 2, z))
+            pts.append(Gf.Vec3f(cxk + nx_ * w / 2, cyk + ny_ * w / 2, z))
+        for k in range(len(t) - 1):
+            b = 2 * k
+            fvc.append(4)
+            fvi += [b, b + 1, b + 3, b + 2]
+        mesh = UsdGeom.Mesh.Define(self.stage, path)
+        mesh.CreatePointsAttr(pts)
+        mesh.CreateFaceVertexCountsAttr(fvc)
+        mesh.CreateFaceVertexIndicesAttr(fvi)
+        mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+        mesh.CreateDoubleSidedAttr(True)
+        mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+        return mesh
+
     def place_cracks(self):
-        """Floor cracks as REAL GEOMETRY (same technique as the pillar crack, which is stable):
-        thin jagged dark ribbons lying flat 1 mm above the patio. Opaque, no textures/opacity ->
-        cannot flicker, z-fight, or change orientation with the camera. `crack_floor_base` always,
-        plus one more with probability `crack_floor_extra_prob`; random position/heading/length
-        within the cone bounds; spread apart by `crack_min_sep`."""
+        """Floor cracks as REAL GEOMETRY following the user's crack PNG (centreline + width
+        extracted from cracks/*.png), flat 1 mm above the patio. Opaque -> cannot flicker,
+        z-fight, or change orientation. `crack_floor_base` always, +1 with `crack_floor_extra_prob`."""
         c = self.cfg
         n = c.crack_floor_base + (1 if self.rng.uniform() < c.crack_floor_extra_prob else 0)
         UsdGeom.Xform.Define(self.stage, "/World/Cracks")
@@ -519,13 +587,9 @@ class SceneBuilder:
         z = c.patio_top + 0.001
         lim = c.cone_half - 0.3
         placed = []
-        nseg = 26
         for i in range(n):
             L = float(self.rng.uniform(c.crack_len_min, c.crack_len_max))
-            # sample a start point + heading whose whole span stays inside the cone bounds and
-            # away from other cracks
-            x0 = y0 = 0.0
-            phi = 0.0
+            x0 = y0 = phi = 0.0
             for _ in range(300):
                 x0 = float(self.rng.uniform(-lim, lim))
                 y0 = float(self.rng.uniform(-lim, lim))
@@ -535,34 +599,8 @@ class SceneBuilder:
                 if (abs(x1) <= lim and abs(y1) <= lim
                         and all(math.hypot(cx - qx, cy - qy) >= c.crack_min_sep for qx, qy in placed)):
                     break
-            placed.append(((x0 + x0 + L * math.cos(phi)) / 2, (y0 + y0 + L * math.sin(phi)) / 2))
-            # jagged centreline with tapered width, as a flat ribbon
-            pts, fvc, fvi = [], [], []
-            px_, py_ = x0, y0
-            heading = phi
-            step = L / nseg
-            wmax = float(self.rng.uniform(0.018, 0.034))
-            for k in range(nseg + 1):
-                t = k / nseg
-                if k:
-                    heading += math.radians(float(self.rng.uniform(-16, 16)))
-                    px_, py_ = px_ + step * math.cos(heading), py_ + step * math.sin(heading)
-                w = wmax * math.sin(math.pi * min(1.0, max(t, 0.02))) + 0.004
-                nx_, ny_ = -math.sin(heading), math.cos(heading)   # perpendicular
-                pts.append(Gf.Vec3f(px_ - nx_ * w / 2, py_ - ny_ * w / 2, z))
-                pts.append(Gf.Vec3f(px_ + nx_ * w / 2, py_ + ny_ * w / 2, z))
-            for k in range(nseg):
-                b = 2 * k
-                fvc.append(4)
-                fvi += [b, b + 1, b + 3, b + 2]
-            path = f"/World/Cracks/Crack_{i}"
-            mesh = UsdGeom.Mesh.Define(self.stage, path)
-            mesh.CreatePointsAttr(pts)
-            mesh.CreateFaceVertexCountsAttr(fvc)
-            mesh.CreateFaceVertexIndicesAttr(fvi)
-            mesh.CreateSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
-            mesh.CreateDoubleSidedAttr(True)
-            mesh.GetPrim().CreateAttribute("primvars:doNotCastShadows", Sdf.ValueTypeNames.Bool).Set(True)
+            placed.append((x0 + L * math.cos(phi) / 2, y0 + L * math.sin(phi) / 2))
+            mesh = self._crack_ribbon(f"/World/Cracks/Crack_{i}", (x0, y0), phi, L, z)
             self.bind_material(mesh.GetPrim(), mat)
 
     def add_cyl_patch(self, path, radius, height, arc_deg, u_band=(0.375, 0.625), nseg=16):
@@ -597,16 +635,13 @@ class SceneBuilder:
         return mesh
 
     def place_pillar_crack(self):
-        """With probability `crack_pillar_prob`, emboss the crack onto the column: a faceted arc of
-        narrow Omni-Plane strips hugging the cylinder (each facet <=1 mm off the surface), each
-        textured with its vertical slice of the crack. Flat tangent billboards floated off the
-        column; hand-authored curved meshes don't sample opacity textures in this build."""
+        """With probability `crack_pillar_prob`, a REAL-GEOMETRY crack on the column: a thin jagged
+        dark ribbon whose vertices lie ON the cylinder surface (r = R+1mm) -> flush from every
+        angle. (This exact wander version was confirmed good by the user; mapping the PNG path's
+        wide lateral swings onto the narrow column made the ribbon fold into loops.)"""
         c = self.cfg
         if self.rng.uniform() >= c.crack_pillar_prob:
             return
-        # REAL GEOMETRY crack: a thin jagged dark ribbon whose vertices lie ON the cylinder surface
-        # (r = R+1mm) by construction -> flush with the column from every angle. Plain dark material,
-        # no textures/opacity (texture decals proved unreliable on curved geometry in this build).
         px, py = getattr(self, "pillar_xy", (0.0, 0.0))
         R = c.pillar_radius + 0.001
         z0 = c.patio_top + c.pillar_height * float(self.rng.uniform(0.15, 0.30))
