@@ -9,4 +9,10 @@ out/
 __pycache__/
 *.pyc
 
+CLAUDE.md
+AUTOMATION.md
+LEARN.md
+PROJECT_PLAN.md
+
+
 # Keep: code, configs/, assets/textures/ (generated maps), cracks/, ex_imgs/, screenshots/, finals/
